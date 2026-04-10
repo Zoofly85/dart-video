@@ -6,6 +6,10 @@ import {
   ref,
   uploadBytesResumable,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
+import {
+  getAuth,
+  signInAnonymously,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 
 const RECORD_SECONDS = 80;
 const WIDTH = 1280;
@@ -46,6 +50,10 @@ let chunksByCamera = [[], [], []];
 let recordingTimer = null;
 let stopRecordingResolve = null;
 let secondsLeft = RECORD_SECONDS;
+let firebaseApp = null;
+let firebaseStorage = null;
+let firebaseAuth = null;
+let firebaseReady = false;
 
 function log(message) {
   const line = `[${new Date().toLocaleTimeString()}] ${message}`;
@@ -60,6 +68,23 @@ function hasFirebaseConfig() {
       firebaseConfig.storageBucket &&
       firebaseConfig.appId
   );
+}
+
+async function initFirebase() {
+  if (firebaseReady) {
+    return true;
+  }
+  if (!hasFirebaseConfig()) {
+    return false;
+  }
+
+  firebaseApp = firebaseApp || initializeApp(firebaseConfig);
+  firebaseStorage = firebaseStorage || getStorage(firebaseApp);
+  firebaseAuth = firebaseAuth || getAuth(firebaseApp);
+
+  await signInAnonymously(firebaseAuth);
+  firebaseReady = true;
+  return true;
 }
 
 async function loadCameras() {
@@ -245,7 +270,7 @@ async function packageAndUpload() {
   els.downloadLink.textContent = `Download ${sessionId}.zip`;
   els.downloadLink.hidden = false;
 
-  if (!hasFirebaseConfig()) {
+  if (!(await initFirebase())) {
     els.uploadStatus.textContent = "Firebase config is empty. ZIP is ready for local download.";
     els.uploadProgress.value = 100;
     els.recordState.textContent = "Ready";
@@ -255,9 +280,7 @@ async function packageAndUpload() {
   }
 
   els.uploadStatus.textContent = "Uploading ZIP to Firebase Storage...";
-  const app = initializeApp(firebaseConfig);
-  const storage = getStorage(app);
-  const storageRef = ref(storage, `${storageFolder}/${sessionId}.zip`);
+  const storageRef = ref(firebaseStorage, `${storageFolder}/${sessionId}.zip`);
   const uploadTask = uploadBytesResumable(storageRef, zipBlob, {
     contentType: "application/zip",
     customMetadata: {
