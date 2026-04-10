@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dart Recording Collector</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">3-camera dataset collector</p>
+          <h1>Dart throw and takeout recorder</h1>
+          <p class="lede">
+            Select three cameras, record an 80-second session at 1280x720, zip the
+            videos, and upload the package to Firebase Storage.
+          </p>
+        </div>
+        <div class="timer-card">
+          <span id="recordState">Ready</span>
+          <strong id="timer">80</strong>
+          <small>seconds</small>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <button id="loadCamerasBtn" type="button">Load Cameras</button>
+          <button id="previewBtn" type="button" disabled>Start Preview</button>
+          <button id="recordBtn" type="button" disabled>Record 80 Seconds</button>
+          <button id="stopBtn" type="button" disabled>Stop Early</button>
+        </div>
+
+        <div class="camera-selects">
+          <label>
+            Camera 1
+            <select id="camera0"></select>
+          </label>
+          <label>
+            Camera 2
+            <select id="camera1"></select>
+          </label>
+          <label>
+            Camera 3
+            <select id="camera2"></select>
+          </label>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="camera-card">
+          <video id="video0" autoplay muted playsinline></video>
+          <div class="camera-meta">
+            <strong>Camera 1</strong>
+            <span id="meta0">No stream</span>
+          </div>
+        </article>
+        <article class="camera-card">
+          <video id="video1" autoplay muted playsinline></video>
+          <div class="camera-meta">
+            <strong>Camera 2</strong>
+            <span id="meta1">No stream</span>
+          </div>
+        </article>
+        <article class="camera-card">
+          <video id="video2" autoplay muted playsinline></video>
+          <div class="camera-meta">
+            <strong>Camera 3</strong>
+            <span id="meta2">No stream</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>Upload</h2>
+        <p id="uploadStatus">No recording yet.</p>
+        <progress id="uploadProgress" value="0" max="100"></progress>
+        <a id="downloadLink" class="download" hidden>Download ZIP</a>
+      </section>
+
+      <section class="panel">
+        <h2>Instructions for users</h2>
+        <ol>
+          <li>Put the board and cameras in the normal game position.</li>
+          <li>Click <strong>Load Cameras</strong>, then choose the three board cameras.</li>
+          <li>Click <strong>Start Preview</strong> and confirm all three views are correct.</li>
+          <li>Click <strong>Record 80 Seconds</strong>.</li>
+          <li>Throw darts and remove them naturally, including one-by-one takeouts.</li>
+        </ol>
+      </section>
+
+      <section class="log-panel">
+        <h2>Log</h2>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
