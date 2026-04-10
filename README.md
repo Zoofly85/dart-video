@@ -6,7 +6,7 @@ Browser page for collecting 3-camera dart throw/removal sessions.
 
 - opens 3 selected cameras
 - requests `1280x720` at about `30fps`
-- records all 3 streams for 80 seconds
+- records all 3 streams for 60 seconds
 - creates one ZIP containing:
   - `camera_0.webm`
   - `camera_1.webm`

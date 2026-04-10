@@ -11,7 +11,7 @@ import {
   signInAnonymously,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 
-const RECORD_SECONDS = 80;
+const RECORD_SECONDS = 60;
 const WIDTH = 1280;
 const HEIGHT = 720;
 const FPS = 30;
@@ -205,7 +205,7 @@ async function startRecording() {
     recorder.start(1000);
   });
 
-  log("Recording started for 80 seconds.");
+  log("Recording started for 60 seconds.");
   recordingTimer = window.setInterval(() => {
     secondsLeft -= 1;
     els.timer.textContent = String(Math.max(0, secondsLeft));
