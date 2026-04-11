@@ -19,6 +19,7 @@ const SYNC_FLASH_MS = 180;
 const RECORDER_START_SETTLE_MS = 250;
 const MAX_FPS_DRIFT = 2.5;
 const APP_BUILD = "canvas-sync-v2";
+const TIMER_TICK_MS = 200;
 
 const els = {
   loadCamerasBtn: document.querySelector("#loadCamerasBtn"),
@@ -54,6 +55,7 @@ let chunksByCamera = [[], [], []];
 let recordingTimer = null;
 let stopRecordingResolve = null;
 let secondsLeft = RECORD_SECONDS;
+let recordingEndsAtMs = null;
 let firebaseApp = null;
 let firebaseStorage = null;
 let firebaseAuth = null;
@@ -394,6 +396,7 @@ async function startRecording() {
   chunksByCamera = [[], [], []];
   recorders = [];
   secondsLeft = RECORD_SECONDS;
+  recordingEndsAtMs = Date.now() + RECORD_SECONDS * 1000;
   els.timer.textContent = String(secondsLeft);
   els.recordState.textContent = "Recording";
   els.uploadStatus.textContent = "Recording in progress...";
@@ -456,7 +459,8 @@ async function startRecording() {
 
   recorders.forEach((recorder, index) => {
     recorderDiagnostics[index].requestedStartMs = performance.now();
-    recorder.start(100);
+    // Avoid frequent dataavailable callbacks; they can cause UI jank on slower systems.
+    recorder.start();
   });
 
   await Promise.all(recorderStartPromises.filter(Boolean));
@@ -474,13 +478,22 @@ async function startRecording() {
   els.uploadStatus.textContent = "Recording in progress with sync flash marker captured.";
 
   log("Recording started for 60 seconds.");
-  recordingTimer = window.setInterval(() => {
-    secondsLeft -= 1;
-    els.timer.textContent = String(Math.max(0, secondsLeft));
-    if (secondsLeft <= 0) {
+  const updateCountdown = () => {
+    if (recordingEndsAtMs == null) {
+      return;
+    }
+    const remainingMs = Math.max(0, recordingEndsAtMs - Date.now());
+    const remainingSec = Math.ceil(remainingMs / 1000);
+    secondsLeft = remainingSec;
+    els.timer.textContent = String(remainingSec);
+    if (remainingMs <= 0) {
       stopRecording();
     }
-  }, 1000);
+  };
+  updateCountdown();
+  recordingTimer = window.setInterval(() => {
+    updateCountdown();
+  }, TIMER_TICK_MS);
 
   await stopped;
   await packageAndUpload();
@@ -491,6 +504,7 @@ function stopRecording() {
     window.clearInterval(recordingTimer);
     recordingTimer = null;
   }
+  recordingEndsAtMs = null;
   recorders.forEach((recorder) => {
     if (recorder.state !== "inactive") {
       recorder.stop();
