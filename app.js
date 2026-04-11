@@ -18,6 +18,7 @@ const FPS = 30;
 const SYNC_FLASH_MS = 180;
 const RECORDER_START_SETTLE_MS = 250;
 const MAX_FPS_DRIFT = 2.5;
+const APP_BUILD = "canvas-sync-v2";
 
 const els = {
   loadCamerasBtn: document.querySelector("#loadCamerasBtn"),
@@ -507,6 +508,7 @@ async function packageAndUpload() {
   const zip = new JSZip();
   const previewStats = collectPreviewStats();
   const manifest = {
+    appBuild: APP_BUILD,
     sessionId,
     createdAt: new Date().toISOString(),
     durationSeconds: RECORD_SECONDS - secondsLeft,
@@ -641,3 +643,4 @@ els.stopBtn.addEventListener("click", stopRecording);
 window.addEventListener("beforeunload", stopStreams);
 
 log("Recorder loaded. Start with Load Cameras.");
+log(`Build: ${APP_BUILD}`);
