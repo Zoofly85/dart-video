@@ -424,6 +424,8 @@ async function startRecording() {
     bytes: 0,
     trackSettingsAtRecordStart: stream.getVideoTracks()[0]?.getSettings() || {},
   }));
+  const recorderStartedFlags = [false, false, false];
+  const recorderStartPromises = [null, null, null];
 
   resetRecordPipeline();
   ensureRecordCanvases();
@@ -432,9 +434,13 @@ async function startRecording() {
 
   recordStreams.forEach((stream, index) => {
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    recorder.onstart = () => {
-      recorderDiagnostics[index].startedAtMs = performance.now();
-    };
+    recorderStartPromises[index] = new Promise((resolve) => {
+      recorder.onstart = () => {
+        recorderDiagnostics[index].startedAtMs = performance.now();
+        recorderStartedFlags[index] = true;
+        resolve();
+      };
+    });
     recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) {
         chunksByCamera[index].push(event.data);
@@ -468,7 +474,15 @@ async function startRecording() {
     recorder.start(100);
   });
 
+  await Promise.all(recorderStartPromises.filter(Boolean));
   await sleep(RECORDER_START_SETTLE_MS);
+  const startedAtValues = recorderDiagnostics
+    .map((d) => d.startedAtMs)
+    .filter((v) => typeof v === "number");
+  if (startedAtValues.length === 3) {
+    const spread = Math.max(...startedAtValues) - Math.min(...startedAtValues);
+    log(`Recorder onstart spread: ${spread.toFixed(1)}ms.`);
+  }
   const syncFlash = await showSyncFlash();
   lastSyncFlash = syncFlash;
   log(`Sync flash fired at ${syncFlash.startedAtMs.toFixed(1)}ms for ${SYNC_FLASH_MS}ms.`);
