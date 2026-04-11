@@ -126,8 +126,6 @@ function startRecordDrawLoop() {
 
   const draw = () => {
     recordFrameNumber += 1;
-    const nowMs = performance.now();
-    const elapsedMs = nowMs - (recordLoopStartMs || nowMs);
 
     for (let i = 0; i < 3; i += 1) {
       const video = els.videos[i];
@@ -137,13 +135,6 @@ function startRecordDrawLoop() {
       }
 
       ctx.drawImage(video, 0, 0, WIDTH, HEIGHT);
-
-      // Overlay a tiny shared clock for post-alignment diagnostics.
-      ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
-      ctx.fillRect(8, 8, 290, 30);
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "16px monospace";
-      ctx.fillText(`f=${recordFrameNumber} t=${elapsedMs.toFixed(1)}ms`, 14, 28);
     }
 
     recordDrawLoopId = window.requestAnimationFrame(draw);
@@ -424,20 +415,14 @@ async function startRecording() {
     bytes: 0,
     trackSettingsAtRecordStart: stream.getVideoTracks()[0]?.getSettings() || {},
   }));
-  const recorderStartedFlags = [false, false, false];
   const recorderStartPromises = [null, null, null];
 
-  resetRecordPipeline();
-  ensureRecordCanvases();
-  startRecordDrawLoop();
-  recordStreams = recordCanvases.map((canvas) => canvas.captureStream(FPS));
-
-  recordStreams.forEach((stream, index) => {
+  // Record raw camera streams to avoid canvas/RAF throttling dropping frames.
+  streams.forEach((stream, index) => {
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     recorderStartPromises[index] = new Promise((resolve) => {
       recorder.onstart = () => {
         recorderDiagnostics[index].startedAtMs = performance.now();
-        recorderStartedFlags[index] = true;
         resolve();
       };
     });
@@ -511,7 +496,6 @@ function stopRecording() {
       recorder.stop();
     }
   });
-  stopRecordDrawLoop();
   els.stopBtn.disabled = true;
   els.recordState.textContent = "Processing";
   log("Recording stopped.");
@@ -537,10 +521,10 @@ async function packageAndUpload() {
     },
     syncFlash: lastSyncFlash,
     recordPipeline: {
-      mode: "canvas-capture-stream",
+      mode: "raw-stream",
       targetFps: FPS,
-      frameCount: recordFrameNumber,
-      drawLoopStartedAtMs: recordLoopStartMs,
+      frameCount: null,
+      drawLoopStartedAtMs: null,
     },
     previewStats,
     cameras: streams.map((stream, index) => ({
@@ -570,9 +554,6 @@ async function packageAndUpload() {
         ` blob=${camera.blobSizeBytes || 0}B mode=${camera.openMode || "unknown"}${warningText}`,
     );
   });
-
-  stopRecordStreams();
-
   els.uploadStatus.textContent = "Creating ZIP...";
   const zipBlob = await zip.generateAsync(
     { type: "blob", compression: "DEFLATE", compressionOptions: { level: 5 } },
