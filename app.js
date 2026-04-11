@@ -62,6 +62,12 @@ let recorderDiagnostics = [];
 let syncMarker = null;
 let lastSyncFlash = null;
 let currentMimeType = "";
+let recordCanvases = [];
+let recordContexts = [];
+let recordStreams = [];
+let recordDrawLoopId = null;
+let recordFrameNumber = 0;
+let recordLoopStartMs = null;
 
 function log(message) {
   const line = `[${new Date().toLocaleTimeString()}] ${message}`;
@@ -71,6 +77,78 @@ function log(message) {
 
 function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function stopRecordDrawLoop() {
+  if (recordDrawLoopId !== null) {
+    window.cancelAnimationFrame(recordDrawLoopId);
+    recordDrawLoopId = null;
+  }
+}
+
+function stopRecordStreams() {
+  recordStreams.forEach((stream) => {
+    stream.getTracks().forEach((track) => track.stop());
+  });
+  recordStreams = [];
+}
+
+function resetRecordPipeline() {
+  stopRecordDrawLoop();
+  stopRecordStreams();
+  recordCanvases = [];
+  recordContexts = [];
+  recordFrameNumber = 0;
+  recordLoopStartMs = null;
+}
+
+function ensureRecordCanvases() {
+  if (recordCanvases.length === 3 && recordContexts.length === 3) {
+    return;
+  }
+
+  recordCanvases = [0, 1, 2].map(() => {
+    const c = document.createElement("canvas");
+    c.width = WIDTH;
+    c.height = HEIGHT;
+    return c;
+  });
+  recordContexts = recordCanvases.map((canvas) =>
+    canvas.getContext("2d", { alpha: false, willReadFrequently: false }),
+  );
+}
+
+function startRecordDrawLoop() {
+  stopRecordDrawLoop();
+  recordFrameNumber = 0;
+  recordLoopStartMs = performance.now();
+
+  const draw = () => {
+    recordFrameNumber += 1;
+    const nowMs = performance.now();
+    const elapsedMs = nowMs - (recordLoopStartMs || nowMs);
+
+    for (let i = 0; i < 3; i += 1) {
+      const video = els.videos[i];
+      const ctx = recordContexts[i];
+      if (!video || !ctx) {
+        continue;
+      }
+
+      ctx.drawImage(video, 0, 0, WIDTH, HEIGHT);
+
+      // Overlay a tiny shared clock for post-alignment diagnostics.
+      ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.fillRect(8, 8, 290, 30);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "16px monospace";
+      ctx.fillText(`f=${recordFrameNumber} t=${elapsedMs.toFixed(1)}ms`, 14, 28);
+    }
+
+    recordDrawLoopId = window.requestAnimationFrame(draw);
+  };
+
+  recordDrawLoopId = window.requestAnimationFrame(draw);
 }
 
 function buildVideoConstraints(deviceId, useExact) {
@@ -301,6 +379,7 @@ function stopStreams() {
   streams = [];
   captureSessions = [];
   recorderDiagnostics = [];
+  resetRecordPipeline();
   els.videos.forEach((video) => {
     video.srcObject = null;
   });
@@ -345,7 +424,12 @@ async function startRecording() {
     trackSettingsAtRecordStart: stream.getVideoTracks()[0]?.getSettings() || {},
   }));
 
-  streams.forEach((stream, index) => {
+  resetRecordPipeline();
+  ensureRecordCanvases();
+  startRecordDrawLoop();
+  recordStreams = recordCanvases.map((canvas) => canvas.captureStream(FPS));
+
+  recordStreams.forEach((stream, index) => {
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
     recorder.onstart = () => {
       recorderDiagnostics[index].startedAtMs = performance.now();
@@ -380,7 +464,7 @@ async function startRecording() {
 
   recorders.forEach((recorder, index) => {
     recorderDiagnostics[index].requestedStartMs = performance.now();
-    recorder.start();
+    recorder.start(100);
   });
 
   await sleep(RECORDER_START_SETTLE_MS);
@@ -412,6 +496,7 @@ function stopRecording() {
       recorder.stop();
     }
   });
+  stopRecordDrawLoop();
   els.stopBtn.disabled = true;
   els.recordState.textContent = "Processing";
   log("Recording stopped.");
@@ -435,6 +520,12 @@ async function packageAndUpload() {
       platform: navigator.platform || null,
     },
     syncFlash: lastSyncFlash,
+    recordPipeline: {
+      mode: "canvas-capture-stream",
+      targetFps: FPS,
+      frameCount: recordFrameNumber,
+      drawLoopStartedAtMs: recordLoopStartMs,
+    },
     previewStats,
     cameras: streams.map((stream, index) => ({
       index,
@@ -463,6 +554,8 @@ async function packageAndUpload() {
         ` blob=${camera.blobSizeBytes || 0}B mode=${camera.openMode || "unknown"}${warningText}`,
     );
   });
+
+  stopRecordStreams();
 
   els.uploadStatus.textContent = "Creating ZIP...";
   const zipBlob = await zip.generateAsync(
