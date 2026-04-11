@@ -15,6 +15,9 @@ const RECORD_SECONDS = 60;
 const WIDTH = 1280;
 const HEIGHT = 720;
 const FPS = 30;
+const SYNC_FLASH_MS = 180;
+const RECORDER_START_SETTLE_MS = 250;
+const MAX_FPS_DRIFT = 2.5;
 
 const els = {
   loadCamerasBtn: document.querySelector("#loadCamerasBtn"),
@@ -54,11 +57,160 @@ let firebaseApp = null;
 let firebaseStorage = null;
 let firebaseAuth = null;
 let firebaseReady = false;
+let captureSessions = [];
+let recorderDiagnostics = [];
+let syncMarker = null;
+let lastSyncFlash = null;
+let currentMimeType = "";
 
 function log(message) {
   const line = `[${new Date().toLocaleTimeString()}] ${message}`;
   els.log.textContent += `${line}\n`;
   els.log.scrollTop = els.log.scrollHeight;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function buildVideoConstraints(deviceId, useExact) {
+  const sizeMode = useExact ? "exact" : "ideal";
+  return {
+    deviceId: { exact: deviceId },
+    width: { [sizeMode]: WIDTH },
+    height: { [sizeMode]: HEIGHT },
+    frameRate: { [sizeMode]: FPS },
+  };
+}
+
+function getTrackCapabilities(track) {
+  if (typeof track.getCapabilities !== "function") {
+    return null;
+  }
+  try {
+    return track.getCapabilities();
+  } catch {
+    return null;
+  }
+}
+
+function getTrackConstraints(track) {
+  if (typeof track.getConstraints !== "function") {
+    return null;
+  }
+  try {
+    return track.getConstraints();
+  } catch {
+    return null;
+  }
+}
+
+function buildQualityWarnings(settings) {
+  const warnings = [];
+  if (settings.width && settings.width < WIDTH) {
+    warnings.push(`width ${settings.width} < ${WIDTH}`);
+  }
+  if (settings.height && settings.height < HEIGHT) {
+    warnings.push(`height ${settings.height} < ${HEIGHT}`);
+  }
+  if (settings.frameRate && Math.abs(settings.frameRate - FPS) > MAX_FPS_DRIFT) {
+    warnings.push(`fps ${settings.frameRate} far from ${FPS}`);
+  }
+  return warnings;
+}
+
+function formatSettings(settings, modeLabel) {
+  return `${settings.width || "?"}x${settings.height || "?"} @ ${settings.frameRate || "?"}fps (${modeLabel})`;
+}
+
+async function openPreferredStream(deviceId, index) {
+  const attempts = [
+    { mode: "exact", constraints: buildVideoConstraints(deviceId, true) },
+    { mode: "fallback", constraints: buildVideoConstraints(deviceId, false) },
+  ];
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: attempt.constraints,
+      });
+      const track = stream.getVideoTracks()[0];
+      const settings = track?.getSettings() || {};
+      const warnings = buildQualityWarnings(settings);
+      return {
+        stream,
+        mode: attempt.mode,
+        settings,
+        constraints: getTrackConstraints(track),
+        capabilities: getTrackCapabilities(track),
+        warnings,
+        openedAtMs: performance.now(),
+        cameraIndex: index,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(`Camera ${index + 1} could not open at ${WIDTH}x${HEIGHT} ${FPS}fps: ${lastError?.message || "unknown error"}`);
+}
+
+async function ensureVideoPlaying(video) {
+  video.playsInline = true;
+  video.muted = true;
+  await video.play();
+}
+
+function getOrCreateSyncMarker() {
+  if (syncMarker) {
+    return syncMarker;
+  }
+  syncMarker = document.createElement("div");
+  syncMarker.id = "syncMarker";
+  Object.assign(syncMarker.style, {
+    position: "fixed",
+    inset: "0",
+    background: "#ffffff",
+    opacity: "0",
+    pointerEvents: "none",
+    zIndex: "9999",
+    transition: "opacity 24ms linear",
+  });
+  document.body.appendChild(syncMarker);
+  return syncMarker;
+}
+
+async function showSyncFlash() {
+  const marker = getOrCreateSyncMarker();
+  const startedAtMs = performance.now();
+  marker.style.opacity = "1";
+  await sleep(SYNC_FLASH_MS);
+  marker.style.opacity = "0";
+  await sleep(40);
+  return {
+    startedAtMs,
+    endedAtMs: performance.now(),
+    durationMs: SYNC_FLASH_MS,
+  };
+}
+
+function collectPreviewStats() {
+  return els.videos.map((video, index) => {
+    const quality =
+      typeof video.getVideoPlaybackQuality === "function"
+        ? video.getVideoPlaybackQuality()
+        : null;
+    return {
+      index,
+      currentTime: video.currentTime || 0,
+      width: video.videoWidth || 0,
+      height: video.videoHeight || 0,
+      totalVideoFrames: quality?.totalVideoFrames ?? null,
+      droppedVideoFrames: quality?.droppedVideoFrames ?? null,
+    };
+  });
 }
 
 function hasFirebaseConfig() {
@@ -120,27 +272,25 @@ async function startPreview() {
     throw new Error("Please select three different cameras.");
   }
 
-  streams = await Promise.all(
-    deviceIds.map((deviceId) =>
-      navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          deviceId: { exact: deviceId },
-          width: { ideal: WIDTH },
-          height: { ideal: HEIGHT },
-          frameRate: { ideal: FPS },
-        },
-      })
-    )
-  );
+  captureSessions = await Promise.all(deviceIds.map((deviceId, index) => openPreferredStream(deviceId, index)));
+  streams = captureSessions.map((entry) => entry.stream);
 
-  streams.forEach((stream, index) => {
+  captureSessions.forEach((entry, index) => {
+    const { stream, settings, mode, warnings } = entry;
     els.videos[index].srcObject = stream;
-    const settings = stream.getVideoTracks()[0]?.getSettings() || {};
-    els.metas[index].textContent = `${settings.width || "?"}x${settings.height || "?"} @ ${
-      settings.frameRate || "?"
-    }fps`;
+    els.metas[index].textContent = formatSettings(settings, mode);
+    if (warnings.length > 0) {
+      log(`Camera ${index + 1} warning: ${warnings.join(", ")}`);
+    }
   });
+  await Promise.all(els.videos.map((video) => ensureVideoPlaying(video)));
+
+  const weakStreams = captureSessions.filter((entry) => entry.warnings.length > 0);
+  if (weakStreams.length > 0) {
+    els.uploadStatus.textContent = "Preview ready, but one or more cameras did not negotiate ideal capture settings.";
+  } else {
+    els.uploadStatus.textContent = "Preview ready. All cameras negotiated close to 1280x720 @ 30fps.";
+  }
 
   els.recordBtn.disabled = false;
   log("Preview started.");
@@ -149,6 +299,8 @@ async function startPreview() {
 function stopStreams() {
   streams.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
   streams = [];
+  captureSessions = [];
+  recorderDiagnostics = [];
   els.videos.forEach((video) => {
     video.srcObject = null;
   });
@@ -156,8 +308,8 @@ function stopStreams() {
 
 function getMimeType() {
   const candidates = [
-    "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
+    "video/webm;codecs=vp9",
     "video/webm",
   ];
   return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
@@ -180,11 +332,32 @@ async function startRecording() {
   els.stopBtn.disabled = false;
 
   const mimeType = getMimeType();
+  currentMimeType = mimeType;
+  recorderDiagnostics = streams.map((stream, index) => ({
+    index,
+    mimeType,
+    requestedStartMs: null,
+    startedAtMs: null,
+    firstChunkAtMs: null,
+    stoppedAtMs: null,
+    chunkCount: 0,
+    bytes: 0,
+    trackSettingsAtRecordStart: stream.getVideoTracks()[0]?.getSettings() || {},
+  }));
+
   streams.forEach((stream, index) => {
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder.onstart = () => {
+      recorderDiagnostics[index].startedAtMs = performance.now();
+    };
     recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) {
         chunksByCamera[index].push(event.data);
+        recorderDiagnostics[index].chunkCount += 1;
+        recorderDiagnostics[index].bytes += event.data.size;
+        if (recorderDiagnostics[index].firstChunkAtMs == null) {
+          recorderDiagnostics[index].firstChunkAtMs = performance.now();
+        }
       }
     };
     recorders.push(recorder);
@@ -195,15 +368,26 @@ async function startRecording() {
   });
 
   let stoppedCount = 0;
-  recorders.forEach((recorder) => {
+  recorders.forEach((recorder, index) => {
     recorder.onstop = () => {
+      recorderDiagnostics[index].stoppedAtMs = performance.now();
       stoppedCount += 1;
       if (stoppedCount === recorders.length && stopRecordingResolve) {
         stopRecordingResolve();
       }
     };
-    recorder.start(1000);
   });
+
+  recorders.forEach((recorder, index) => {
+    recorderDiagnostics[index].requestedStartMs = performance.now();
+    recorder.start();
+  });
+
+  await sleep(RECORDER_START_SETTLE_MS);
+  const syncFlash = await showSyncFlash();
+  lastSyncFlash = syncFlash;
+  log(`Sync flash fired at ${syncFlash.startedAtMs.toFixed(1)}ms for ${SYNC_FLASH_MS}ms.`);
+  els.uploadStatus.textContent = "Recording in progress with sync flash marker captured.";
 
   log("Recording started for 60 seconds.");
   recordingTimer = window.setInterval(() => {
@@ -236,6 +420,7 @@ function stopRecording() {
 async function packageAndUpload() {
   const sessionId = `dart_session_${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`;
   const zip = new JSZip();
+  const previewStats = collectPreviewStats();
   const manifest = {
     sessionId,
     createdAt: new Date().toISOString(),
@@ -243,18 +428,41 @@ async function packageAndUpload() {
     requestedWidth: WIDTH,
     requestedHeight: HEIGHT,
     requestedFps: FPS,
+    mimeType: currentMimeType || getMimeType(),
+    browser: {
+      userAgent: navigator.userAgent,
+      language: navigator.language,
+      platform: navigator.platform || null,
+    },
+    syncFlash: lastSyncFlash,
+    previewStats,
     cameras: streams.map((stream, index) => ({
       index,
       label: els.selects[index].selectedOptions[0]?.textContent || `Camera ${index + 1}`,
       settings: stream.getVideoTracks()[0]?.getSettings() || {},
+      constraints: captureSessions[index]?.constraints || null,
+      capabilities: captureSessions[index]?.capabilities || null,
+      openMode: captureSessions[index]?.mode || null,
+      warnings: captureSessions[index]?.warnings || [],
+      openedAtMs: captureSessions[index]?.openedAtMs || null,
+      recorder: recorderDiagnostics[index] || null,
     })),
   };
 
   chunksByCamera.forEach((chunks, index) => {
     const blob = new Blob(chunks, { type: chunks[0]?.type || "video/webm" });
     zip.file(`camera_${index}.webm`, blob);
+    manifest.cameras[index].blobSizeBytes = blob.size;
   });
   zip.file("session.json", JSON.stringify(manifest, null, 2));
+
+  manifest.cameras.forEach((camera) => {
+    const warningText = camera.warnings?.length ? ` warnings=${camera.warnings.join(", ")}` : "";
+    log(
+      `Camera ${camera.index + 1}: ${camera.settings.width || "?"}x${camera.settings.height || "?"} @ ${camera.settings.frameRate || "?"}fps` +
+        ` blob=${camera.blobSizeBytes || 0}B mode=${camera.openMode || "unknown"}${warningText}`,
+    );
+  });
 
   els.uploadStatus.textContent = "Creating ZIP...";
   const zipBlob = await zip.generateAsync(
